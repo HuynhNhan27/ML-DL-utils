@@ -12,8 +12,8 @@ from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, OneHotEncoder, OrdinalEncoder
-from sklearn.metrics import r2_score
-
+from sklearn.metrics import r2_score, f1_score
+from tqdm import tqdm
 
 
 plt.style.use('seaborn-v0_8')
@@ -52,7 +52,7 @@ def numeric_stat_report(df: pd.DataFrame):
     numeric_feature = list(df.select_dtypes(include=["number"]).columns)
     return numeric_feature, df.describe(include=["number"])
 
-def numeric_plot(df: pd.DataFrame, config: dict | None = ..., plot="histogram"):
+def numeric_plot(df: pd.DataFrame, config: dict, plot="histogram"):
     if config is None:
         config = {
             "normal": list(df.select_dtypes(include=["number"]).columns)
@@ -60,7 +60,7 @@ def numeric_plot(df: pd.DataFrame, config: dict | None = ..., plot="histogram"):
 
     numeric_feature = [(transform, col) for transform, columns in config.items() for col in columns]
 
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig, axes = plt.subplots(len(numeric_feature) // 3 + 1, 3, figsize=(15, 10))
     for i, (transform, col) in enumerate(numeric_feature):
         row_idx, col_idx = i // 3, i % 3
 
@@ -237,10 +237,12 @@ def preprocess(preprocess_config: list, data: pd.DataFrame, target: str):
 
 ################################# Trainning #######################################
 
-def train_one_model(params, split_datasets, y_transform=None):
+def train_one_model(params, split_datasets, score, y_transform=None):
     results = split_datasets.drop(columns=["data"])
-    results["r2"] = 0
-    for i, (X_train, X_test, y_train, y_test) in enumerate(split_datasets["data"]):
+    results[score] = 0
+    for i, (X_train, X_test, y_train, y_test) in tqdm(
+        enumerate(split_datasets["data"]), total=len(split_datasets), desc="Training"
+    ):
         model = Pipeline(steps=[("model", params["model"])])
         model.set_params(**params)
         model.set_output(transform="pandas")
@@ -250,11 +252,22 @@ def train_one_model(params, split_datasets, y_transform=None):
         
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
-        if y_transform is not None:
-            y_pred = y_transform.inverse_transform(y_pred.reshape(-1, 1))
+
         
-        results["r2"][i] = r2_score(y_test, y_pred)
-    
+        if score == "r2":
+            if y_transform is not None:
+                y_pred = y_transform.inverse_transform(y_pred.reshape(-1, 1))
+
+            results[score][i] = r2_score(y_test, y_pred)
+
+        elif score == "f1":
+            if y_transform is not None:
+                y_test = y_transform.transform(y_test.values.reshape(-1, 1))
+            
+            results[score][i] = f1_score(y_test, y_pred)
+        else:
+            raise ValueError
+        
     return results
 
 ################################# End of Trainning #######################################
