@@ -23,7 +23,7 @@ sns.set_palette("husl")
 
 def dataset_info(df: pd.DataFrame):
     '''
-    Print Pandas.DataFrame info like: len, feature, shape, columns name, dtype
+    In thông tin của DataFrame: len, feature, shape, columns name, dtype
     '''
     print("\nDataset Info:")
     print(f"Total samples: {len(df):,}")
@@ -33,11 +33,18 @@ def dataset_info(df: pd.DataFrame):
     print("Dtypes:\n", df.dtypes)
 
 def missing_report(df: pd.DataFrame):
+    """
+    In báo cáo missing values của DataFrame, sắp xếp theo số lượng giảm dần,
+    kèm theo phần trăm thiếu trên tổng số mẫu.
+    """
     missing_df = df.isna().sum().sort_values(ascending=False)
     print("Missing Value:")
     print(pd.DataFrame({"Missing" : missing_df, "Percent" : (missing_df / len(df) * 100).round(2)}))
 
 def column_report(df: pd.DataFrame):
+    """
+    In báo cáo tổng quan từng cột: kiểu dữ liệu (dtype) và số lượng giá trị unique.
+    """
     print("Column Report:")
     print(pd.DataFrame({"Dtypes" : df.dtypes, "Nunique" : df.nunique()}))
 
@@ -49,10 +56,23 @@ def column_report(df: pd.DataFrame):
 ################# Numeric ########################
 
 def numeric_stat_report(df: pd.DataFrame):
+    """
+    Trả về danh sách tên cột số và bảng thống kê mô tả (count, mean, std, min, quartiles, max).
+    """
     numeric_feature = list(df.select_dtypes(include=["number"]).columns)
     return numeric_feature, df.describe(include=["number"])
 
 def numeric_plot(df: pd.DataFrame, config: dict, plot="histogram"):
+    """
+    Vẽ biểu đồ phân phối cho các cột số.
+
+    Args:
+        df     : DataFrame đầu vào.
+        config : dict ánh xạ kiểu biến đổi trục x tới danh sách tên cột.
+                 Ví dụ: {"normal": ["col_a"], "log": ["col_b"]}.
+                 Nếu None, tất cả cột số được vẽ theo trục "normal".
+        plot   : loại biểu đồ, "histogram" hoặc "boxplot".
+    """
     if config is None:
         config = {
             "normal": list(df.select_dtypes(include=["number"]).columns)
@@ -60,9 +80,12 @@ def numeric_plot(df: pd.DataFrame, config: dict, plot="histogram"):
 
     numeric_feature = [(transform, col) for transform, columns in config.items() for col in columns]
 
-    fig, axes = plt.subplots(len(numeric_feature) // 3 + 1, 3, figsize=(15, 10))
+    cols = 3
+    rows = len(numeric_feature) // cols + 1
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 5))
+    axes = axes.reshape(rows, cols)
     for i, (transform, col) in enumerate(numeric_feature):
-        row_idx, col_idx = i // 3, i % 3
+        row_idx, col_idx = i // cols, i % cols
 
         if transform == "normal":
             clean_data = df[col].dropna()
@@ -97,6 +120,12 @@ def numeric_plot(df: pd.DataFrame, config: dict, plot="histogram"):
 ################ Categorical #######################
 
 def categorical_stat_report(df: pd.DataFrame):
+    """
+    In top 10 giá trị phổ biến nhất, số unique và số missing cho từng cột categorical.
+
+    Returns:
+        Danh sách tên các cột categorical.
+    """
     categorical_feature = list(df.select_dtypes(include=["object", "category"]).columns)
     for col in categorical_feature:
         print(f"================== Top 10 {col} ==================")
@@ -128,10 +157,33 @@ def make_column_pipeline(config: dict) -> Pipeline:
     ])
 
 def make_preprocess_pipeline(step_list: list):
+    """
+    Tạo một sklearn Pipeline từ danh sách các transformer, tự động đặt tên bước là step_0, step_1, ...
+
+    Args:
+        step_list: danh sách các sklearn transformer/estimator.
+
+    Returns:
+        sklearn Pipeline.
+    """
     return Pipeline(steps=[(f"step_{i}",step) for i, step in enumerate(step_list)])
 
 def get_preprocesser(step: str, type: str):
+    """
+    Trả về một sklearn transformer tương ứng với bước và loại được chỉ định.
 
+    Args:
+        step : tên bước xử lý. Các giá trị hợp lệ:
+                 "num_impute"  – imputer cho cột số  ("mean", "median", "constant")
+                 "cate_impute" – imputer cho cột cate ("most", "constant")
+                 "scale"       – scaler               ("standard", "minmax", "robust", "log1p_robust")
+                 "pca"         – giảm chiều PCA        ("pca_0.95_auto", "pca_0.95_full", "pca_0.99_auto", "pca_0.99_full")
+                 "encode"      – encoder cate          ("onehot", "ordinal")
+        type : tên cụ thể của transformer trong bước đó, hoặc "all" để lấy toàn bộ dict.
+
+    Returns:
+        Sklearn transformer tương ứng, hoặc dict nếu type="all".
+    """
     num_imputer_dict = {
         "mean": SimpleImputer(strategy="mean"),
         "median": SimpleImputer(strategy="median"),
@@ -186,6 +238,24 @@ def get_preprocesser(step: str, type: str):
 ################################# End of Preprocessing #######################################
 
 def preprocess(preprocess_config: list, data: pd.DataFrame, target: str):
+    """
+    Chạy nhiều cấu hình tiền xử lý trên cùng một DataFrame và trả về tập train/test tương ứng.
+
+    Mỗi config trong preprocess_config là một dict có các key:
+        num_impute  : "mean" | "median" | "constant" | "none" (dropna)
+        cate_impute : "most" | "constant" | "none" (dropna)
+        scale       : "standard" | "minmax" | "robust" | "log1p_robust" | "none"
+        pca         : "pca_0.95_auto" | "pca_0.95_full" | "pca_0.99_auto" | "pca_0.99_full" | "none"
+        encode      : "onehot" | "ordinal" | "none"
+
+    Args:
+        preprocess_config : danh sách các config dict.
+        data              : DataFrame gốc (có cả feature và target).
+        target            : tên cột nhãn.
+
+    Returns:
+        DataFrame với các cột config và cột "data" chứa tuple (X_train, X_test, y_train, y_test).
+    """
     results = pd.DataFrame(columns=[name for name in preprocess_config[0]] + ["data"])
 
     data = data.dropna(subset=[target])
@@ -238,6 +308,21 @@ def preprocess(preprocess_config: list, data: pd.DataFrame, target: str):
 ################################# Trainning #######################################
 
 def train_one_model(params, split_datasets, score, y_transform=None):
+    """
+    Train một model trên nhiều bộ dữ liệu đã preprocess và đánh giá theo metric chỉ định.
+
+    Args:
+        params         : dict chứa key "model" (sklearn estimator) và các hyperparameter dạng
+                         pipeline (ví dụ: {"model": Ridge(), "model__alpha": 1.0}).
+        split_datasets : DataFrame từ hàm preprocess(), cột "data" chứa
+                         tuple (X_train, X_test, y_train, y_test).
+        score          : metric đánh giá: "r2" (regression) hoặc "f1" (classification).
+        y_transform    : sklearn transformer áp dụng lên nhãn trước khi train (ví dụ: Log1pRobustScaler).
+                         Nếu None, nhãn giữ nguyên.
+
+    Returns:
+        DataFrame với các cột config (không có "data") và cột score tương ứng.
+    """
     results = split_datasets.drop(columns=["data"])
     results[score] = 0
     for i, (X_train, X_test, y_train, y_test) in tqdm(
@@ -281,6 +366,11 @@ def train_one_model(params, split_datasets, score, y_transform=None):
 from sklearn.base import BaseEstimator, TransformerMixin
 
 class Log1pRobustScaler(BaseEstimator, TransformerMixin):
+    """
+    Scaler kết hợp log1p và RobustScaler: áp dụng log(1+x) trước, sau đó scale bằng RobustScaler.
+    Phù hợp cho dữ liệu số có phân phối lệch (skewed) và nhiều outlier.
+    Hỗ trợ cả numpy array và pandas DataFrame, và inverse_transform để khôi phục giá trị gốc.
+    """
     def __init__(self):
         self.scaler = RobustScaler()
         self.columns_ = None
