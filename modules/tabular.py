@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 import seaborn as sns
 import sklearn
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -204,7 +204,7 @@ def get_preprocesser(step: str, type: str):
 
     pca_dict = {
         "pca_0.95_auto": PCA(n_components=0.95, svd_solver="auto"),
-        "pca_0.95_full": PCA(n_components=0.99, svd_solver="full"),
+        "pca_0.95_full": PCA(n_components=0.95, svd_solver="full"),
         "pca_0.99_auto": PCA(n_components=0.99, svd_solver="auto"),
         "pca_0.99_full": PCA(n_components=0.99, svd_solver="full")
     }
@@ -354,6 +354,79 @@ def train_one_model(params, split_datasets, score, y_transform=None):
             raise ValueError
         
     return results
+
+def cross_validate_model(model, X, y, cv=5, score="f1"):
+    """
+    Wrapper cho sklearn cross_val_score. Đánh giá model qua k-fold CV và in mean ± std.
+
+    Args:
+        model : sklearn estimator.
+        X     : features (array-like hoặc DataFrame).
+        y     : nhãn (array-like hoặc Series).
+        cv    : số fold, mặc định 5.
+        score : metric đánh giá: "f1", "accuracy", hoặc "r2".
+
+    Returns:
+        dict với các key:
+            "scores" : np.ndarray các fold scores,
+            "mean"   : float mean score,
+            "std"    : float std score.
+    """
+    score_map = {
+        "f1":       "f1",
+        "accuracy": "accuracy",
+        "r2":       "r2",
+    }
+
+    if score not in score_map:
+        raise ValueError(f"score phải là một trong {list(score_map.keys())}, nhận được: '{score}'")
+
+    scores = cross_val_score(model, X, y, cv=cv, scoring=score_map[score])
+    mean, std = scores.mean(), scores.std()
+
+    fold_lines = "  ".join([f"fold {i+1}: {s:.4f}" for i, s in enumerate(scores)])
+    print(f"[Cross-Validation] score={score}, cv={cv}")
+    print(f"  {fold_lines}")
+    print(f"  => mean={mean:.4f} ± std={std:.4f}")
+
+    return {"scores": scores, "mean": mean, "std": std}
+
+def hyperparameter_search(model, param_grid, X, y, method="grid", cv=5, score="f1", n_iter=10):
+    """
+    Wrapper cho GridSearchCV / RandomizedSearchCV.
+
+    Args:
+        model      : sklearn estimator.
+        param_grid : dict hoặc list of dicts tham số cần tìm kiếm.
+        X          : features (array-like hoặc DataFrame).
+        y          : nhãn (array-like hoặc Series).
+        method     : "grid"   → GridSearchCV,
+                     "random" → RandomizedSearchCV.
+        cv         : số fold cross-validation, mặc định 5.
+        score      : metric đánh giá: "f1", "accuracy", hoặc "r2".
+        n_iter     : số tổ hợp thử khi method="random", mặc định 10.
+
+    Returns:
+        Fitted search object (GridSearchCV hoặc RandomizedSearchCV).
+        Truy cập kết quả qua .best_params_, .best_score_, .cv_results_.
+    """
+    if score not in ("f1", "accuracy", "r2"):
+        raise ValueError(f"score phải là 'f1', 'accuracy' hoặc 'r2', nhận được: '{score}'")
+
+    if method == "grid":
+        search = GridSearchCV(model, param_grid, cv=cv, scoring=score, refit=True)
+    elif method == "random":
+        search = RandomizedSearchCV(model, param_grid, n_iter=n_iter, cv=cv, scoring=score, refit=True, random_state=42)
+    else:
+        raise ValueError(f"method phải là 'grid' hoặc 'random', nhận được: '{method}'")
+
+    search.fit(X, y)
+
+    print(f"[Hyperparameter Search] method={method}, cv={cv}, score={score}")
+    print(f"  best_params_ : {search.best_params_}")
+    print(f"  best_score_  : {search.best_score_:.4f}")
+
+    return search
 
 ################################# End of Trainning #######################################
 

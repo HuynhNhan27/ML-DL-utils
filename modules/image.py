@@ -9,12 +9,12 @@ from pathlib import Path
 from collections import Counter
 from typing import List, Optional, Tuple, Dict
 
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 import sklearn
 from sklearn.pipeline import Pipeline
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder
 from sklearn.decomposition import PCA
 from sklearn.metrics import accuracy_score, f1_score, classification_report
@@ -226,6 +226,69 @@ class ImageFlattener(BaseEstimator, TransformerMixin):
     def transform(self, X):
         return X.reshape(len(X), -1)
 
+class ImageAugmentor(BaseEstimator, TransformerMixin):
+    """
+    Sklearn-compatible transformer cho data augmentation dùng PIL.
+    Chỉ augment khi train_mode=True, trả về ảnh gốc khi train_mode=False (inference).
+
+    Augmentations:
+        - Random horizontal flip (flip_h) (dùng random.rand())
+        - Random vertical flip   (flip_v) (dùng random.rand())
+        - Random rotation trong [-rotate_deg, +rotate_deg]
+        - Random brightness jitter trong [1-brightness, 1+brightness]
+        - Random contrast jitter  trong [1-contrast,   1+contrast  ]
+
+    Args:
+        flip_h     : bật random horizontal flip, mặc định True. (ngang)
+        flip_v     : bật random vertical flip, mặc định False. (dọc)
+        rotate_deg : góc xoay tối đa (độ), mặc định 30.
+        brightness : cường độ jitter độ sáng, mặc định 0.2.
+        contrast   : cường độ jitter độ tương phản, mặc định 0.2.
+        train_mode : nếu False, transform() bỏ qua mọi augmentation.
+    """
+    def __init__(
+        self,
+        flip_h: bool = True,
+        flip_v: bool = False,
+        rotate_deg: float = 30,
+        brightness: float = 0.2,
+        contrast: float = 0.2,
+        train_mode: bool = True
+    ):
+        self.flip_h = flip_h
+        self.flip_v = flip_v
+        self.rotate_deg = rotate_deg
+        self.brightness = brightness
+        self.contrast = contrast
+        self.train_mode = train_mode
+    
+    def fit(self, X, y=None):
+        return self
+    
+    def _augment_one(self, img : Image.Image) -> Image.Image:
+        if self.flip_h and np.random.rand() > 0.5:
+            img = img.transpose(Image.FLIP_LEFT_RIGHT)
+        if self.flip_v and np.random.rand() > 0.5:
+            img = img.transpose(Image.FLIP_TOP_BOTTOM)
+        if self.rotate_deg:
+            angle = np.random.uniform(-self.rotate_deg, self.rotate_deg)
+            img = img.rotate(angle, resample=Image.BILINEAR)
+        if self.brightness:
+            factor = np.random.uniform(1 - self.brightness, 1 + self.brightness)
+            img = ImageEnhance.Brightness(img).enhance(factor)
+        if self.contrast:
+            factor = np.random.uniform(1 - self.contrast, 1 + self.contrast)
+            img = ImageEnhance.Contrast(img).enhance(factor)
+        return img
+
+    def transform(self, X):
+        def _to_pil(img):
+            return Image.fromarray(img) if isinstance(img, np.ndarray) else img
+        
+        if self.train_mode:
+            return np.array([np.array(self._augment_one(_to_pil(img))) for img in X])
+        
+        return np.array([np.array(_to_pil(img)) for img in X])
 
 ########################## End of Preprocessing ##########################
 
@@ -511,5 +574,84 @@ def train_multi_model(
             raise ValueError(f"Unknown score '{score}', use 'f1' or 'accuracy'")
 
     return results_df
+
+def cross_validate_model(
+    model,
+    X: np.ndarray,
+    y: np.ndarray,
+    cv: int = 5,
+    score: str = "f1"
+) -> np.ndarray:
+    """
+    K-fold cross-validation cho image classifier.
+    In fold-by-fold scores + mean ± std.
+
+    Args:
+        model : sklearn estimator (đã được khởi tạo).
+        X     : feature array (N, d).
+        y     : label array (N,).
+        cv    : số folds, mặc định 5.
+        score : 'f1' | 'accuracy', mặc định 'f1'.
+
+    Returns:
+        scores: numpy array kết quả từng fold.
+    """
+    scoring = "f1_weighted" if score == "f1" else score
+    scores = cross_val_score(model, X, y, cv=cv, scoring=scoring)
+
+    print(f"\nCross-Validation ({cv}-fold) | metric: {score}")
+    print("-" * 40)
+    for i, s in enumerate(scores, start=1):
+        print(f"  Fold {i}: {s:.4f}")
+    print("-" * 40)
+    print(f"  Mean : {scores.mean():.4f}")
+    print(f"  Std  : {scores.std():.4f}")
+
+    return scores
+
+
+def hyperparameter_search(
+    model,
+    param_grid: Dict,
+    X: np.ndarray,
+    y: np.ndarray,
+    method: str = "grid",
+    cv: int = 5,
+    score: str = "f1"
+):
+    """
+    GridSearchCV / RandomizedSearchCV wrapper.
+    In best_params_ và best_score_.
+
+    Args:
+        model      : sklearn estimator (đã được khởi tạo).
+        param_grid : dict hoặc list of dicts các hyperparameter cần tìm kiếm.
+        X          : feature array (N, d).
+        y          : label array (N,).
+        method     : 'grid' dùng GridSearchCV, 'random' dùng RandomizedSearchCV.
+        cv         : số folds cross-validation, mặc định 5.
+        score      : 'f1' | 'accuracy', mặc định 'f1'.
+
+    Returns:
+        searcher: fitted GridSearchCV hoặc RandomizedSearchCV object.
+    """
+    scoring = "f1_weighted" if score == "f1" else score
+
+    if method == "grid":
+        searcher = GridSearchCV(model, param_grid, cv=cv, scoring=scoring, n_jobs=-1)
+    elif method == "random":
+        searcher = RandomizedSearchCV(model, param_grid, cv=cv, scoring=scoring, n_jobs=-1)
+    else:
+        raise ValueError(f"Unknown method '{method}', use 'grid' or 'random'")
+
+    searcher.fit(X, y)
+
+    print(f"\nHyperparameter Search ({method}SearchCV) | metric: {score}")
+    print("-" * 40)
+    print(f"  Best params : {searcher.best_params_}")
+    print(f"  Best score  : {searcher.best_score_:.4f}")
+
+    return searcher
+
 
 ########################## End of Training ##########################
